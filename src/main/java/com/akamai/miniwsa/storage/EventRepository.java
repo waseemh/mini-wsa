@@ -8,7 +8,9 @@ import com.akamai.miniwsa.model.StatsGroup;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 
 public interface EventRepository {
 
@@ -23,7 +25,11 @@ public interface EventRepository {
         }
     }
 
+    /** Stores the events; one whose eventId already exists is skipped. */
     void saveAll(List<EnrichedEvent> events);
+
+    /** The subset of {@code eventIds} that are already stored. */
+    Set<String> existingIds(Collection<String> eventIds);
 
     /** Event count and average threat score per {@code dimension}, busiest first. */
     List<StatsGroup> topGroups(Dimension dimension, EventFilter filter, int limit);

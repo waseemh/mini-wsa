@@ -1,5 +1,6 @@
 package com.akamai.miniwsa.stats;
 
+import com.akamai.miniwsa.api.error.ErrorCode;
 import com.akamai.miniwsa.api.error.InvalidRequestException;
 import com.akamai.miniwsa.model.BucketInterval;
 import com.akamai.miniwsa.model.EventFilter;
@@ -35,7 +36,7 @@ public class StatsService {
 
     public StatsSummary summary(Long configId, Instant from, Instant to) {
         if (from.isAfter(to)) {
-            throw new InvalidRequestException("from", "'from' must not be after 'to'");
+            throw new InvalidRequestException("from", ErrorCode.OUT_OF_RANGE, "'from' must not be after 'to'");
         }
 
         EventFilter filter = new EventFilter(configId, from, to, null, null);
@@ -67,12 +68,12 @@ public class StatsService {
      */
     public TimeSeries timeSeries(Long configId, Instant from, Instant to, BucketInterval interval) {
         if (from.isAfter(to)) {
-            throw new InvalidRequestException("from", "'from' must not be after 'to'");
+            throw new InvalidRequestException("from", ErrorCode.OUT_OF_RANGE, "'from' must not be after 'to'");
         }
         long step = interval.seconds();
         long firstBucket = Math.floorDiv(from.getEpochSecond(), step) * step;
         if ((to.getEpochSecond() - firstBucket) / step + 1 > MAX_BUCKETS) {
-            throw new InvalidRequestException("interval",
+            throw new InvalidRequestException("interval", ErrorCode.OUT_OF_RANGE,
                     "time range spans more than " + MAX_BUCKETS + " buckets; use a larger interval or a shorter range");
         }
 

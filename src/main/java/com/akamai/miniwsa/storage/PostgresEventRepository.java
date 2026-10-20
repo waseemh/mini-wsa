@@ -20,6 +20,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.List;
@@ -76,7 +79,7 @@ public class PostgresEventRepository implements EventRepository {
         this.jdbc = jdbc;
     }
 
-    /** Idempotent: an event whose eventId already exists is skipped. */
+    /** Safety net for races: {@code ON CONFLICT DO NOTHING} skips an eventId stored since {@link #existingIds}. */
     @Override
     @Transactional
     public void saveAll(List<EnrichedEvent> events) {
@@ -108,6 +111,15 @@ public class PostgresEventRepository implements EventRepository {
             ps.setString(i++, e.attackType());
             ps.setInt(i, e.threatScore());
         });
+    }
+
+    @Override
+    public Set<String> existingIds(Collection<String> eventIds) {
+        if (eventIds.isEmpty()) {
+            return Set.of();
+        }
+        return new HashSet<>(jdbc.queryForList("SELECT event_id FROM events WHERE event_id = ANY (?)", String.class,
+                (Object) eventIds.toArray(new String[0])));
     }
 
     @Override

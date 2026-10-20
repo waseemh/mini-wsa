@@ -75,9 +75,9 @@ class EventGeneratorTest {
 
     @Test
     void waveEventsTriggerTheRepeatOffenderBonus() {
-        RepeatOffenderTracker tracker = new RepeatOffenderTracker();
+        RepeatOffenderTracker.Batch window = new RepeatOffenderTracker().newBatch();
         long flagged = generate(11, 5000).stream()
-                .filter(e -> tracker.recordAndCount(e.clientIp(), e.timestamp()) > 5)
+                .filter(e -> window.countAndAdd(e.clientIp(), e.timestamp()) > 5)
                 .count();
 
         assertThat(flagged).isPositive();

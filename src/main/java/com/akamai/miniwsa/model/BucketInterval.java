@@ -1,5 +1,6 @@
 package com.akamai.miniwsa.model;
 
+import com.akamai.miniwsa.api.error.ErrorCode;
 import com.akamai.miniwsa.api.error.InvalidRequestException;
 
 import java.util.Arrays;
@@ -26,6 +27,6 @@ public enum BucketInterval {
 
     public static BucketInterval parse(String label) {
         return Arrays.stream(values()).filter(i -> i.label.equals(label)).findFirst()
-                .orElseThrow(() -> new InvalidRequestException("interval", "must be one of 1m, 5m, 1h"));
+                .orElseThrow(() -> new InvalidRequestException("interval", ErrorCode.INVALID_ENUM, "must be one of 1m, 5m, 1h"));
     }
 }

@@ -67,19 +67,36 @@ one path, with one rule, a few seconds apart, mostly `DENY`. Events are emitted 
 
 ## API
 
-Errors always look like this (HTTP 400):
+### Errors
+
+Every error, including the ones Spring raises itself (404, 405, 415), has the same body:
 
 ```json
-{ "status": 400, "message": "Validation failed",
-  "errors": [ { "index": 1, "field": "path", "message": "must not be blank" } ] }
+{ "status": 400, "code": "VALIDATION_FAILED", "message": "One or more events are invalid",
+  "errors": [ { "index": 1, "field": "rule.severity", "code": "INVALID_ENUM",
+                "message": "must be one of CRITICAL, HIGH, MEDIUM, LOW" } ] }
 ```
 
-`index` is the position in the batch and is left out for errors that are not about a batch item (such as query parameters). Timestamps are ISO 8601 UTC.
-Time ranges are `from` inclusive, `to` exclusive.
+Branch on `code`, not on `message`.
+
+| HTTP | `code` | When |
+|---|---|---|
+| 400 | `VALIDATION_FAILED` | Some events in an ingest request are invalid; `errors` lists them |
+| 400 | `INVALID_REQUEST` | A query parameter is missing, malformed or out of range; `errors` names it |
+| 400 | `MALFORMED_REQUEST` | The body is empty or not valid JSON |
+| 404 / 405 / 415 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `UNSUPPORTED_MEDIA_TYPE` | Unknown endpoint, wrong method, body not `application/json` |
+| 503 | `SERVICE_UNAVAILABLE` | The database is unreachable or timed out. Has a `Retry-After` header; retrying is safe |
+| 500 | `INTERNAL_ERROR` | A bug. The message is generic and `errorId` matches a line in the server log |
+
+Field errors have a `code` too: `REQUIRED`, `INVALID_ENUM` (the message lists the allowed values), `INVALID_FORMAT`,
+`INVALID_TYPE` and `OUT_OF_RANGE`. `index` is the position in the batch and is left out when the request is not an
+array or the error is not about a batch item (such as a query parameter). `errorId` appears on 5xx errors only.
+If a bad batch has more than 100 problems, only the first 100 are listed and `"truncated": true` is set.
+Timestamps are ISO 8601 UTC, and time ranges are `from` inclusive, `to` exclusive.
 
 ### `POST /v1/events/ingest`
 
-Accepts one event or an array. Returns `201` with the number accepted.
+Accepts one event or an array. Returns `201` with the number of events stored and the number skipped as duplicates.
 
 ```bash
 curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' -d '{
@@ -90,7 +107,7 @@ curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json'
             "severity": "CRITICAL", "category": "INJECTION" },
   "action": "DENY", "geoLocation": { "country": "CN", "city": "Beijing" },
   "requestSize": 1024, "responseSize": 256 }'
-# {"accepted":1}
+# {"accepted":1,"duplicates":0}
 ```
 
 Required: `eventId`, `timestamp`, `configId`, `clientIp`, `path`, `method`, `rule` (with `id`, `name`,
@@ -100,9 +117,11 @@ IPv4 or IPv6 address, and `statusCode`, if present, must be 100 to 599. Enums: `
 PROTOCOL_VIOLATION, DATA_LEAKAGE, BOT, DOS, RATE_LIMIT; `action` DENY/ALERT/MONITOR. Bad enum values and
 unparseable timestamps are reported per event and field (for example `rule.severity`).
 
-- **A batch is all or nothing**: if any event is invalid, nothing is stored and every problem is listed.
-- **Ingestion is idempotent**: an event whose `eventId` already exists is skipped (and still counted in
-  `accepted`), so a client can safely retry a batch.
+- **A batch is all or nothing**: if any event is invalid, nothing is stored and the problems of every event are
+  listed (for each event, the first problem with its structure or types, and all of its missing or out-of-range fields).
+- **Ingestion is idempotent**: an event whose `eventId` already exists, in the database or earlier in the same
+  request, is skipped and counted in `duplicates`, so a client can safely retry a batch. Skipped events do not
+  affect threat scores.
 
 To ingest a generated file: `curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' -d @events.json`.
 
@@ -240,13 +259,16 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
   the order they are ingested, so out-of-order data is scored on what has been seen so far.
 - **Repeat-offender** means more than 5 *earlier* events in the window; the current event is not counted.
 - **The repeat-offender window is in memory**: per instance, empty after a restart, and idle IPs are not evicted.
-  It is updated as events are scored, so a retried batch (skipped as duplicates in the database) still counts
-  again in the window and can raise the scores of later events from the same IP. See the improvements below.
+  Events join the window only after their batch has been stored, so a failed or retried request leaves it
+  unchanged. See the improvements below.
 - **Whole-batch rejection** keeps clients simple (nothing to reconcile after a 400).
 - `receivedAt` is set once per request by the server clock.
 
 ## Testing
 
+- Error handling: the shared error body for every kind of failure (404, 405, 415, malformed JSON, bad parameters),
+  503 with `Retry-After` and 500 with an `errorId` (storage mocked to fail), the capped error list, and that a failed
+  save leaves the repeat-offender window untouched.
 - Unit tests: classification (every category), scoring (every branch, bonuses stacking, the cap), the
   repeat-offender window (boundaries, independent IPs, out-of-order), and the generator (determinism, ordering,
   validity, category coverage, attack-wave shape, and that waves actually trigger the repeat-offender bonus).
@@ -267,10 +289,10 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
 
 ## Challenges
 
-- **Useful validation errors for batches.** A plain `@Valid` list gives vague errors, and malformed values (bad
-  enum, bad timestamp) fail inside Jackson before validation runs. I validate each event with Bean Validation
-  to get `{index, field}` errors, and translate Jackson's mapping exceptions (using their path) into the same
-  shape, so the client sees one consistent error format.
+- **Useful validation errors for batches.** Binding the whole body to a list stops at the first malformed value
+  and gives vague, Jackson-flavoured messages. The controller takes the raw JSON instead; each event is bound and
+  validated on its own, and binding failures are translated (using the exception's path and target type) into
+  `{index, field, code, message}` entries, so one response lists the problems of every event in the same shape.
 - **Defining the repeat-offender rule.** The wording leaves open what "within the last 10 minutes" is measured
   against and whether the current event counts. I chose event time and "earlier events only", wrote them down
   above, and covered the boundaries with tests.

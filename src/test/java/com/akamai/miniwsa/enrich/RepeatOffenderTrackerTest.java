@@ -12,30 +12,58 @@ class RepeatOffenderTrackerTest {
 
     private final RepeatOffenderTracker tracker = new RepeatOffenderTracker();
 
+    /** Counts earlier events, then records this one: what ingesting an event does. */
+    private int seen(String ip, Instant at) {
+        int count = tracker.count(ip, at);
+        tracker.record(ip, at);
+        return count;
+    }
+
     @Test
     void countsEarlierEventsFromSameIp() {
-        assertThat(tracker.recordAndCount("1.1.1.1", T0)).isZero();
-        assertThat(tracker.recordAndCount("1.1.1.1", T0.plusSeconds(10))).isEqualTo(1);
-        assertThat(tracker.recordAndCount("1.1.1.1", T0.plusSeconds(20))).isEqualTo(2);
+        assertThat(seen("1.1.1.1", T0)).isZero();
+        assertThat(seen("1.1.1.1", T0.plusSeconds(10))).isEqualTo(1);
+        assertThat(seen("1.1.1.1", T0.plusSeconds(20))).isEqualTo(2);
     }
 
     @Test
     void ipsAreIndependent() {
-        tracker.recordAndCount("1.1.1.1", T0);
-        assertThat(tracker.recordAndCount("2.2.2.2", T0.plusSeconds(1))).isZero();
+        seen("1.1.1.1", T0);
+        assertThat(seen("2.2.2.2", T0.plusSeconds(1))).isZero();
     }
 
     @Test
     void eventsOlderThanTenMinutesDoNotCount() {
-        tracker.recordAndCount("1.1.1.1", T0);
-        assertThat(tracker.recordAndCount("1.1.1.1", T0.plusSeconds(600))).isEqualTo(1);   // exactly 10 min: still in
-        assertThat(tracker.recordAndCount("1.1.1.1", T0.plusSeconds(601))).isEqualTo(1);   // T0 dropped, 600s remains
-        assertThat(tracker.recordAndCount("1.1.1.1", T0.plusSeconds(2000))).isZero();
+        seen("1.1.1.1", T0);
+        assertThat(seen("1.1.1.1", T0.plusSeconds(600))).isEqualTo(1);   // exactly 10 min: still in
+        assertThat(seen("1.1.1.1", T0.plusSeconds(601))).isEqualTo(1);   // T0 dropped, 600s remains
+        assertThat(seen("1.1.1.1", T0.plusSeconds(2000))).isZero();
     }
 
     @Test
     void outOfOrderEventDoesNotCountLaterOnes() {
-        tracker.recordAndCount("1.1.1.1", T0.plusSeconds(300));
-        assertThat(tracker.recordAndCount("1.1.1.1", T0)).isZero();
+        seen("1.1.1.1", T0.plusSeconds(300));
+        assertThat(seen("1.1.1.1", T0)).isZero();
+    }
+
+    @Test
+    void batchEventsCountEachOtherButNotTheWindowUntilCommitted() {
+        RepeatOffenderTracker.Batch batch = tracker.newBatch();
+
+        assertThat(batch.countAndAdd("1.1.1.1", T0)).isZero();
+        assertThat(batch.countAndAdd("1.1.1.1", T0.plusSeconds(10))).isEqualTo(1);
+        assertThat(tracker.count("1.1.1.1", T0.plusSeconds(20))).isZero();   // not committed yet
+
+        batch.commit();
+        assertThat(tracker.count("1.1.1.1", T0.plusSeconds(20))).isEqualTo(2);
+    }
+
+    @Test
+    void batchSeesAlreadyCommittedEvents() {
+        seen("1.1.1.1", T0);
+        RepeatOffenderTracker.Batch batch = tracker.newBatch();
+
+        assertThat(batch.countAndAdd("1.1.1.1", T0.plusSeconds(5))).isEqualTo(1);
+        assertThat(batch.countAndAdd("1.1.1.1", T0.plusSeconds(6))).isEqualTo(2);
     }
 }

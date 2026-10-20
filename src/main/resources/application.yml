@@ -5,10 +5,13 @@ spring:
     url: jdbc:postgresql://localhost:5432/miniwsa?reWriteBatchedInserts=true
     username: miniwsa
     password: miniwsa
+    hikari:
+      # fail fast when the database is unreachable, so clients get a 503 within seconds instead of 30
+      connection-timeout: 3000
   jackson:
     deserialization:
-      # lets POST /v1/events/ingest take a single event or an array
-      accept-single-value-as-array: true
+      # strict input: 1.5 is not a valid configId
+      accept-float-as-int: false
     mapper:
       # strict input: no "77" for a number field, no epoch number for an ISO timestamp
       allow-coercion-of-scalars: false

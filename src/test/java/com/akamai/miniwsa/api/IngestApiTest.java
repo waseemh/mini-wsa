@@ -62,17 +62,56 @@ class IngestApiTest extends PostgresIntegrationTest {
     }
 
     @Test
-    void rejectsInvalidEnum() throws Exception {
+    void rejectsInvalidEnumWithAllowedValues() throws Exception {
         ingest(event("e-1", "NOPE"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[0].field").value("rule.severity"));
+                .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+                .andExpect(jsonPath("$.errors[0].field").value("rule.severity"))
+                .andExpect(jsonPath("$.errors[0].code").value("INVALID_ENUM"))
+                .andExpect(jsonPath("$.errors[0].message").value("must be one of CRITICAL, HIGH, MEDIUM, LOW"))
+                .andExpect(jsonPath("$.errors[0].index").doesNotExist());   // single event, not a batch
     }
 
     @Test
     void rejectsInvalidTimestamp() throws Exception {
         ingest(event("t-1", "HIGH").replace("2026-05-20T14:32:10Z", "yesterday"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errors[0].field").value("timestamp"));
+                .andExpect(jsonPath("$.errors[0].field").value("timestamp"))
+                .andExpect(jsonPath("$.errors[0].code").value("INVALID_FORMAT"))
+                .andExpect(jsonPath("$.errors[0].message").value(org.hamcrest.Matchers.containsString("ISO 8601")));
+    }
+
+    @Test
+    void reportsEveryProblemAcrossABatch() throws Exception {
+        String badEnum = event("m-1", "NOPE");
+        String badTimestamp = event("m-2", "HIGH").replace("2026-05-20T14:32:10Z", "yesterday");
+        String missingPath = event("m-3", "HIGH").replace("\"path\":\"/api/v1/login\",", "");
+        String negativeStatus = event("m-4", "HIGH").replace("403", "42");
+
+        ingest("[" + String.join(",", badEnum, event("m-ok", "LOW"), badTimestamp, missingPath, negativeStatus) + "]")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[?(@.index==0 && @.field=='rule.severity' && @.code=='INVALID_ENUM')]").exists())
+                .andExpect(jsonPath("$.errors[?(@.index==2 && @.field=='timestamp' && @.code=='INVALID_FORMAT')]").exists())
+                .andExpect(jsonPath("$.errors[?(@.index==3 && @.field=='path' && @.code=='REQUIRED')]").exists())
+                .andExpect(jsonPath("$.errors[?(@.index==4 && @.field=='statusCode' && @.code=='OUT_OF_RANGE')]").exists())
+                .andExpect(jsonPath("$.errors[?(@.index==1)]").isEmpty())
+                .andExpect(jsonPath("$.truncated").doesNotExist());
+    }
+
+    @Test
+    void capsTheErrorListOfAHugeBadBatch() throws Exception {
+        String body = "[" + String.join(",", java.util.Collections.nCopies(300, "{}")) + "]";
+        ingest(body).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.length()").value(100))
+                .andExpect(jsonPath("$.truncated").value(true));
+    }
+
+    @Test
+    void rejectsBodyThatIsNeitherEventNorArray() throws Exception {
+        ingest("\"hello\"").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].code").value("INVALID_TYPE"));
+        ingest("[1, null]").andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors.length()").value(2));
     }
 
     @Test
@@ -83,8 +122,10 @@ class IngestApiTest extends PostgresIntegrationTest {
 
     @Test
     void duplicateEventIdIsIgnored() throws Exception {
-        ingest(event("dup-1", "HIGH")).andExpect(status().isCreated());
-        ingest(event("dup-1", "HIGH")).andExpect(status().isCreated());
+        ingest(event("dup-1", "HIGH")).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.accepted").value(1)).andExpect(jsonPath("$.duplicates").value(0));
+        ingest(event("dup-1", "HIGH")).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.accepted").value(0)).andExpect(jsonPath("$.duplicates").value(1));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM events WHERE event_id = 'dup-1'", Integer.class)).isEqualTo(1);
     }
 
@@ -113,6 +154,14 @@ class IngestApiTest extends PostgresIntegrationTest {
         ingest(event("ty-1", "HIGH").replace("\"2026-05-20T14:32:10Z\"", "1716215530"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[0].field").value("timestamp"));
+    }
+
+    @Test
+    void rejectsDecimalWhereWholeNumberExpected() throws Exception {
+        ingest(event("dec-1", "HIGH").replace("14227", "14227.5"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("configId"))
+                .andExpect(jsonPath("$.errors[0].code").value("INVALID_TYPE"));
     }
 
     @Test
