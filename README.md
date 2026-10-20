@@ -282,14 +282,6 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
   against a single path, with a fixed seed, give the stats and the repeat-offender logic something real to
   show, and keep the output reproducible.
 
-## One thing I learned
-
-PostgreSQL's `date_bin` (14+) buckets timestamps to arbitrary intervals aligned to an origin, which is what the
-time-series endpoint needs: `date_trunc` only handles calendar units, so `5m` buckets would otherwise need
-awkward arithmetic. Using an epoch origin keeps buckets aligned to the clock, and the same alignment is
-reproduced in Java to fill empty buckets with zeros. I learned it by reading the docs and then writing a test
-that pins the alignment, including a range that starts in the middle of a bucket.
-
 ## Milestones
 
 | Tag | Content |
