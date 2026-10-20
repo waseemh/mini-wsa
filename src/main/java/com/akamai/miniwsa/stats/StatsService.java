@@ -1,6 +1,7 @@
 package com.akamai.miniwsa.stats;
 
 import com.akamai.miniwsa.api.error.InvalidRequestException;
+import com.akamai.miniwsa.model.EventFilter;
 import com.akamai.miniwsa.model.StatsGroup;
 import com.akamai.miniwsa.model.StatsSummary;
 import com.akamai.miniwsa.model.StatsSummary.Attacker;
@@ -32,11 +33,13 @@ public class StatsService {
             throw new InvalidRequestException("from", "'from' must not be after 'to'");
         }
 
+        EventFilter filter = new EventFilter(configId, from, to, null, null);
+
         // Categories and actions are small closed sets, so no limit is needed.
-        List<StatsGroup> categories = repository.topGroups(Dimension.CATEGORY, configId, from, to, Integer.MAX_VALUE);
-        List<StatsGroup> actions = repository.topGroups(Dimension.ACTION, configId, from, to, Integer.MAX_VALUE);
-        List<StatsGroup> attackers = repository.topGroups(Dimension.CLIENT_IP, configId, from, to, TOP_N);
-        List<StatsGroup> paths = repository.topGroups(Dimension.PATH, configId, from, to, TOP_N);
+        List<StatsGroup> categories = repository.topGroups(Dimension.CATEGORY, filter, Integer.MAX_VALUE);
+        List<StatsGroup> actions = repository.topGroups(Dimension.ACTION, filter, Integer.MAX_VALUE);
+        List<StatsGroup> attackers = repository.topGroups(Dimension.CLIENT_IP, filter, TOP_N);
+        List<StatsGroup> paths = repository.topGroups(Dimension.PATH, filter, TOP_N);
 
         Map<String, CategoryStats> byCategory = new LinkedHashMap<>();
         categories.forEach(g -> byCategory.put(g.key(), new CategoryStats(g.count(), g.avgThreatScore())));

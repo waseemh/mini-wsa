@@ -1,9 +1,10 @@
 package com.akamai.miniwsa.storage;
 
 import com.akamai.miniwsa.model.EnrichedEvent;
+import com.akamai.miniwsa.model.EventFilter;
+import com.akamai.miniwsa.model.SamplesPage;
 import com.akamai.miniwsa.model.StatsGroup;
 
-import java.time.Instant;
 import java.util.List;
 
 public interface EventRepository {
@@ -21,9 +22,9 @@ public interface EventRepository {
 
     void saveAll(List<EnrichedEvent> events);
 
-    /**
-     * Event count and average threat score per {@code dimension}, busiest first, for events with
-     * {@code from <= timestamp < to}. A null {@code configId} means all configurations.
-     */
-    List<StatsGroup> topGroups(Dimension dimension, Long configId, Instant from, Instant to, int limit);
+    /** Event count and average threat score per {@code dimension}, busiest first. */
+    List<StatsGroup> topGroups(Dimension dimension, EventFilter filter, int limit);
+
+    /** Matching events, newest first, plus the total number of matches. */
+    SamplesPage samples(EventFilter filter, int limit, int offset);
 }
