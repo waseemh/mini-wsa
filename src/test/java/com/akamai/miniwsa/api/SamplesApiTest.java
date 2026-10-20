@@ -9,6 +9,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -83,6 +84,13 @@ class SamplesApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void capsLimitAtOneHundred() throws Exception {
+        samples(CONFIG + "&limit=5000").andExpect(status().isOk())
+                .andExpect(jsonPath("$.limit").value(100))
+                .andExpect(jsonPath("$.items", hasSize(5)));
+    }
+
+    @Test
     void filtersByCategoryAndAction() throws Exception {
         samples(CONFIG + "&category=BOT")
                 .andExpect(jsonPath("$.total").value(2))
@@ -102,9 +110,8 @@ class SamplesApiTest extends PostgresIntegrationTest {
 
     @Test
     void rejectsBadParameters() throws Exception {
-        samples(CONFIG + "&limit=101").andExpect(status().isBadRequest())
+        samples(CONFIG + "&limit=0").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[0].field").value("limit"));
-        samples(CONFIG + "&limit=0").andExpect(status().isBadRequest());
         samples(CONFIG + "&offset=-1").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errors[0].field").value("offset"));
         samples(CONFIG + "&category=NOPE").andExpect(status().isBadRequest())

@@ -9,3 +9,6 @@ spring:
     deserialization:
       # lets POST /v1/events/ingest take a single event or an array
       accept-single-value-as-array: true
+    mapper:
+      # strict input: no "77" for a number field, no epoch number for an ISO timestamp
+      allow-coercion-of-scalars: false

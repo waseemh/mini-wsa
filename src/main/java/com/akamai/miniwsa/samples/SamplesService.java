@@ -19,8 +19,8 @@ public class SamplesService {
     }
 
     public SamplesPage samples(EventFilter filter, int limit, int offset) {
-        if (limit < 1 || limit > MAX_LIMIT) {
-            throw new InvalidRequestException("limit", "must be between 1 and " + MAX_LIMIT);
+        if (limit < 1) {
+            throw new InvalidRequestException("limit", "must be at least 1");
         }
         if (offset < 0) {
             throw new InvalidRequestException("offset", "must not be negative");
@@ -28,6 +28,7 @@ public class SamplesService {
         if (filter.from() != null && filter.to() != null && filter.from().isAfter(filter.to())) {
             throw new InvalidRequestException("from", "'from' must not be after 'to'");
         }
-        return repository.samples(filter, limit, offset);
+        // a larger limit is capped, not rejected; the response reports the limit actually applied
+        return repository.samples(filter, Math.min(limit, MAX_LIMIT), offset);
     }
 }

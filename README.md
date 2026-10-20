@@ -25,11 +25,11 @@ docker compose run --rm --no-deps --entrypoint java app \
   org.springframework.boot.loader.launch.PropertiesLauncher --count 10000 --post http://app:8080
 ```
 
-### Local build (Java 21 + Maven)
+### Local build (Java 21; Maven is bundled via `./mvnw`)
 
 ```bash
 docker compose up -d postgres        # database only
-mvn package -DskipTests              # builds target/mini-wsa-*.jar
+./mvnw package -DskipTests            # builds target/mini-wsa-*.jar
 java -jar target/mini-wsa-*.jar      # http://localhost:8080
 scripts/generate.sh --count 10000 --post http://localhost:8080
 ```
@@ -40,16 +40,16 @@ Spring variables (`SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING
 ### Tests
 
 ```bash
-mvn test
+./mvnw test
 ```
 
 Unit tests need nothing. The API tests start a real PostgreSQL with Testcontainers, so **Docker must be
 running**. (If your Docker engine rejects Testcontainers with "client version 1.32 is too old", run
-`mvn test -DargLine="-Dapi.version=1.44"`.)
+`./mvnw test -DargLine="-Dapi.version=1.44"`.)
 
 ### Data generator
 
-`scripts/generate.sh` (needs a built jar) or the Docker command above. Options:
+`scripts/generate.sh` (needs a built jar: `./mvnw package -DskipTests`) or the Docker command above. Options:
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -74,7 +74,7 @@ Errors always look like this (HTTP 400):
   "errors": [ { "index": 1, "field": "path", "message": "must not be blank" } ] }
 ```
 
-`index` is the position in the batch and is omitted for query-parameter errors. Timestamps are ISO 8601 UTC.
+`index` is the position in the batch and is left out for errors that are not about a batch item (such as query parameters). Timestamps are ISO 8601 UTC.
 Time ranges are `from` inclusive, `to` exclusive.
 
 ### `POST /v1/events/ingest`
@@ -94,7 +94,9 @@ curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json'
 ```
 
 Required: `eventId`, `timestamp`, `configId`, `clientIp`, `path`, `method`, `rule` (with `id`, `name`,
-`severity`, `category`) and `action`. Enums: `severity` CRITICAL/HIGH/MEDIUM/LOW; `category` INJECTION, XSS,
+`severity`, `category`) and `action`. Validation is strict: `timestamp` must be an ISO 8601 string with a zone or
+offset (not an epoch number or a bare date), numbers must be numbers (not `"77"`), `clientIp` must be a literal
+IPv4 or IPv6 address, and `statusCode`, if present, must be 100 to 599. Enums: `severity` CRITICAL/HIGH/MEDIUM/LOW; `category` INJECTION, XSS,
 PROTOCOL_VIOLATION, DATA_LEAKAGE, BOT, DOS, RATE_LIMIT; `action` DENY/ALERT/MONITOR. Bad enum values and
 unparseable timestamps are reported per event and field (for example `rule.severity`).
 
@@ -131,7 +133,7 @@ decimal. Categories and actions with no events are left out.
 ### `GET /v1/events/samples`
 
 All parameters are optional: `configId`, `from`, `to`, `category`, `action`, `limit` (default 20, 1 to 100) and
-`offset` (default 0).
+`offset` (default 0). A `limit` above 100 is capped at 100 and the response reports the limit that was applied; a `limit` below 1 or a negative `offset` is a 400.
 
 ```bash
 curl 'localhost:8080/v1/events/samples?configId=14227&category=INJECTION&action=DENY&limit=2&offset=0'
@@ -145,8 +147,7 @@ curl 'localhost:8080/v1/events/samples?configId=14227&category=INJECTION&action=
                "attackType": "SQL/Command Injection", "threatScore": 75 } ] }
 ```
 
-Newest first, with `eventId` as a tie-breaker so pages never overlap. `total` counts all matches. Values outside
-the allowed `limit` range are rejected with 400 rather than silently clamped.
+Newest first, with `eventId` as a tie-breaker so pages never overlap. `total` counts all matches.
 
 ### `GET /v1/stats/timeseries` (bonus)
 
@@ -239,7 +240,8 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
   the order they are ingested, so out-of-order data is scored on what has been seen so far.
 - **Repeat-offender** means more than 5 *earlier* events in the window; the current event is not counted.
 - **The repeat-offender window is in memory**: per instance, empty after a restart, and idle IPs are not evicted.
-  See the improvements below.
+  It is updated as events are scored, so a retried batch (skipped as duplicates in the database) still counts
+  again in the window and can raise the scores of later events from the same IP. See the improvements below.
 - **Whole-batch rejection** keeps clients simple (nothing to reconcile after a 400).
 - `receivedAt` is set once per request by the server clock.
 

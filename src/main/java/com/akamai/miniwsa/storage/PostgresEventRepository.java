@@ -13,6 +13,7 @@ import com.akamai.miniwsa.model.Category;
 import com.akamai.miniwsa.model.Severity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -77,6 +78,7 @@ public class PostgresEventRepository implements EventRepository {
 
     /** Idempotent: an event whose eventId already exists is skipped. */
     @Override
+    @Transactional
     public void saveAll(List<EnrichedEvent> events) {
         jdbc.batchUpdate(INSERT, events, events.size(), (ps, e) -> {
             SecurityEvent ev = e.event();

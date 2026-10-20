@@ -87,4 +87,38 @@ class IngestApiTest extends PostgresIntegrationTest {
         ingest(event("dup-1", "HIGH")).andExpect(status().isCreated());
         assertThat(jdbc.queryForObject("SELECT count(*) FROM events WHERE event_id = 'dup-1'", Integer.class)).isEqualTo(1);
     }
+
+    @Test
+    void rejectsClientIpThatIsNotAnIpAddress() throws Exception {
+        ingest(event("ip-1", "HIGH").replace("203.0.113.42", "not-an-ip"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("clientIp"));
+        ingest(event("ip-2", "HIGH").replace("203.0.113.42", "999.1.1.1")).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void acceptsIpv6() throws Exception {
+        ingest(event("ip-3", "HIGH").replace("203.0.113.42", "2001:db8::1")).andExpect(status().isCreated());
+    }
+
+    @Test
+    void rejectsOutOfRangeStatusCode() throws Exception {
+        ingest(event("sc-1", "HIGH").replace("403", "-5"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("statusCode"));
+    }
+
+    @Test
+    void rejectsEpochNumberAsTimestamp() throws Exception {
+        ingest(event("ty-1", "HIGH").replace("\"2026-05-20T14:32:10Z\"", "1716215530"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("timestamp"));
+    }
+
+    @Test
+    void rejectsNumberGivenAsString() throws Exception {
+        ingest(event("ty-2", "HIGH").replace("14227", "\"14227\""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errors[0].field").value("configId"));
+    }
 }
