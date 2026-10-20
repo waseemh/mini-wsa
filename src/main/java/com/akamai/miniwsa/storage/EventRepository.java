@@ -1,10 +1,13 @@
 package com.akamai.miniwsa.storage;
 
+import com.akamai.miniwsa.model.BucketInterval;
 import com.akamai.miniwsa.model.EnrichedEvent;
 import com.akamai.miniwsa.model.EventFilter;
 import com.akamai.miniwsa.model.SamplesPage;
 import com.akamai.miniwsa.model.StatsGroup;
 
+import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 
 public interface EventRepository {
@@ -27,4 +30,7 @@ public interface EventRepository {
 
     /** Matching events, newest first, plus the total number of matches. */
     SamplesPage samples(EventFilter filter, int limit, int offset);
+
+    /** Event count per non-empty time bucket, keyed by bucket start. */
+    Map<Instant, Long> countsPerBucket(EventFilter filter, BucketInterval interval);
 }

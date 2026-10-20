@@ -1,6 +1,8 @@
 package com.akamai.miniwsa.api;
 
+import com.akamai.miniwsa.model.BucketInterval;
 import com.akamai.miniwsa.model.StatsSummary;
+import com.akamai.miniwsa.model.TimeSeries;
 import com.akamai.miniwsa.stats.StatsService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.format.annotation.DateTimeFormat.ISO;
@@ -28,5 +30,15 @@ public class StatsController {
             @RequestParam @DateTimeFormat(iso = ISO.DATE_TIME) Instant from,
             @RequestParam @DateTimeFormat(iso = ISO.DATE_TIME) Instant to) {
         return statsService.summary(configId, from, to);
+    }
+
+    /** Event counts per {@code interval} (1m, 5m or 1h) bucket, with empty buckets as zero, ready for a line chart. */
+    @GetMapping("/timeseries")
+    public TimeSeries timeSeries(
+            @RequestParam(required = false) Long configId,
+            @RequestParam @DateTimeFormat(iso = ISO.DATE_TIME) Instant from,
+            @RequestParam @DateTimeFormat(iso = ISO.DATE_TIME) Instant to,
+            @RequestParam String interval) {
+        return statsService.timeSeries(configId, from, to, BucketInterval.parse(interval));
     }
 }

@@ -1,5 +1,6 @@
 package com.akamai.miniwsa.storage;
 
+import com.akamai.miniwsa.model.BucketInterval;
 import com.akamai.miniwsa.model.EnrichedEvent;
 import com.akamai.miniwsa.model.EventFilter;
 import com.akamai.miniwsa.model.GeoLocation;
@@ -16,7 +17,10 @@ import org.springframework.stereotype.Repository;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.List;
 
 @Repository
@@ -130,6 +134,21 @@ public class PostgresEventRepository implements EventRepository {
                 SELECT_EVENT + where.sql() + " ORDER BY ts DESC, event_id LIMIT ? OFFSET ?",
                 PostgresEventRepository::mapEvent, args.toArray());
         return new SamplesPage(total, limit, offset, items);
+    }
+
+    @Override
+    public Map<Instant, Long> countsPerBucket(EventFilter filter, BucketInterval interval) {
+        Where where = Where.of(filter);
+        List<Object> args = new ArrayList<>();
+        args.add(interval.seconds() + " seconds");
+        args.addAll(where.args());
+        Map<Instant, Long> counts = new LinkedHashMap<>();
+        jdbc.query("SELECT date_bin(?::interval, ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bucket, count(*) AS cnt "
+                        + "FROM events" + where.sql() + " GROUP BY 1 ORDER BY 1",
+                rs -> {
+                    counts.put(rs.getTimestamp("bucket").toInstant(), rs.getLong("cnt"));
+                }, args.toArray());
+        return counts;
     }
 
     private static EnrichedEvent mapEvent(ResultSet rs, int rowNum) throws SQLException {
