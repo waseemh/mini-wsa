@@ -1,6 +1,10 @@
 spring:
   application:
     name: mini-wsa
+  datasource:
+    url: jdbc:postgresql://localhost:5432/miniwsa?reWriteBatchedInserts=true
+    username: miniwsa
+    password: miniwsa
   jackson:
     deserialization:
       # lets POST /v1/events/ingest take a single event or an array

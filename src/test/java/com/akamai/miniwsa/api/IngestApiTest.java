@@ -1,8 +1,12 @@
 package com.akamai.miniwsa.api;
 
-import com.akamai.miniwsa.storage.InMemoryEventRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -15,6 +19,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@Testcontainers
 class IngestApiTest {
 
     private static final String EVENT = """
@@ -26,8 +31,12 @@ class IngestApiTest {
              "action":"DENY","geoLocation":{"country":"CN","city":"Beijing"},
              "requestSize":1024,"responseSize":256}""";
 
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
     @Autowired MockMvc mvc;
-    @Autowired InMemoryEventRepository repository;
+    @Autowired JdbcTemplate jdbc;
 
     private String event(String id, String severity) {
         return EVENT.formatted(id, severity);
@@ -39,10 +48,13 @@ class IngestApiTest {
 
     @Test
     void acceptsSingleEvent() throws Exception {
-        int before = repository.all().size();
         ingest(event("single-1", "CRITICAL")).andExpect(status().isCreated()).andExpect(jsonPath("$.accepted").value(1));
-        assertThat(repository.all()).hasSize(before + 1);
-        assertThat(repository.all().getLast().receivedAt()).isNotNull();
+
+        var row = jdbc.queryForMap("SELECT * FROM events WHERE event_id = 'single-1'");
+        assertThat(row.get("attack_type")).isEqualTo("SQL/Command Injection");
+        assertThat(((Number) row.get("threat_score")).intValue()).isEqualTo(75);   // 40 + 20 (DENY) + 15 (/login)
+        assertThat(row.get("received_at")).isNotNull();
+        assertThat(row.get("client_ip").toString()).isEqualTo("203.0.113.42");
     }
 
     @Test
@@ -74,8 +86,14 @@ class IngestApiTest {
 
     @Test
     void rejectsBatchAtomically() throws Exception {
-        int before = repository.all().size();
         ingest("[" + event("atomic-1", "HIGH") + ",{\"eventId\":\"bad\"}]").andExpect(status().isBadRequest());
-        assertThat(repository.all()).hasSize(before);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM events WHERE event_id = 'atomic-1'", Integer.class)).isZero();
+    }
+
+    @Test
+    void duplicateEventIdIsIgnored() throws Exception {
+        ingest(event("dup-1", "HIGH")).andExpect(status().isCreated());
+        ingest(event("dup-1", "HIGH")).andExpect(status().isCreated());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM events WHERE event_id = 'dup-1'", Integer.class)).isEqualTo(1);
     }
 }
