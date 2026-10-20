@@ -1,23 +1,30 @@
 # Mini WSA
 
 A small security analytics pipeline in the spirit of Akamai's Web Security Analytics. It ingests security
-events (DLRs), classifies and scores them, stores them in PostgreSQL and serves analytics over a REST API.
+events (DLRs), classifies and scores them, stores them in PostgreSQL, and serves analytics over a REST API.
 
-- Java 21, Spring Boot 3, PostgreSQL 16, Flyway, Maven
-- Ingest (single or batch) with validation, enrichment (`attackType`, `threatScore`), summary stats, sample
-  browsing with pagination, a time-series endpoint (the bonus), and a seeded data generator with attack waves
+- **Stack:** Java 21, Spring Boot 3, PostgreSQL 16, Flyway, Maven
+- **Features:** batch or single ingestion with strict validation, enrichment (`attackType`, `threatScore`),
+  summary statistics, sample browsing with pagination, a time-series endpoint (the bonus), and a seeded data
+  generator that simulates attack waves
+
+**Contents:** [Quick start](#quick-start) · [API](#api) · [Threat score](#threat-score) ·
+[Architecture](#architecture) · [Storage choice](#storage-choice) ·
+[Design decisions](#design-decisions-and-assumptions) · [Testing](#testing) ·
+[Improvements](#what-i-would-improve-with-more-time) · [Challenges](#challenges) · [Milestones](#milestones)
 
 ## Quick start
 
-### Docker (recommended)
+Ports 8080 (app) and 5432 (PostgreSQL) must be free.
+
+### With Docker (recommended)
 
 ```bash
 docker compose up --build
 ```
 
-This starts PostgreSQL and the app on <http://localhost:8080>. The schema is created automatically by Flyway.
-
-Load some data (10,000 events including attack waves), using the app image so no local Java is needed:
+This starts PostgreSQL and the app on <http://localhost:8080>; Flyway creates the schema. In a second terminal,
+load 10,000 generated events (including attack waves) using the app image, so no local Java is needed:
 
 ```bash
 docker compose run --rm --no-deps --entrypoint java app \
@@ -25,17 +32,27 @@ docker compose run --rm --no-deps --entrypoint java app \
   org.springframework.boot.loader.launch.PropertiesLauncher --count 10000 --post http://app:8080
 ```
 
-### Local build (Java 21; Maven is bundled via `./mvnw`)
+Then try the API (the generator covers the last 24 hours, so a wide range is the easiest; the time series needs a range
+that matches the data, see below):
 
 ```bash
-docker compose up -d postgres        # database only
+curl 'localhost:8080/v1/stats/summary?from=2000-01-01T00:00:00Z&to=2100-01-01T00:00:00Z'
+curl 'localhost:8080/v1/events/samples?category=INJECTION&limit=3'
+```
+
+### Without Docker for the app (Java 21)
+
+Maven is bundled as `./mvnw`. PostgreSQL still comes from Compose:
+
+```bash
+docker compose up -d postgres
 ./mvnw package -DskipTests            # builds target/mini-wsa-*.jar
-java -jar target/mini-wsa-*.jar      # http://localhost:8080
+java -jar target/mini-wsa-*.jar       # http://localhost:8080
 scripts/generate.sh --count 10000 --post http://localhost:8080
 ```
 
-Database settings default to `localhost:5432`, database/user/password `miniwsa`. Override with the usual
-Spring variables (`SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`).
+Database settings default to `localhost:5432` with database, user and password `miniwsa`. Override them with
+`SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME` and `SPRING_DATASOURCE_PASSWORD`.
 
 ### Tests
 
@@ -43,56 +60,31 @@ Spring variables (`SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING
 ./mvnw test
 ```
 
-Unit tests need nothing. The API tests start a real PostgreSQL with Testcontainers, so **Docker must be
-running**. (If your Docker engine rejects Testcontainers with "client version 1.32 is too old", run
-`./mvnw test -DargLine="-Dapi.version=1.44"`.)
+The unit tests need nothing; the API tests start a real PostgreSQL with Testcontainers, so **Docker must be
+running**. If your Docker engine rejects Testcontainers with "client version 1.32 is too old", run
+`./mvnw test -DargLine="-Dapi.version=1.44"`.
 
 ### Data generator
 
-`scripts/generate.sh` (needs a built jar: `./mvnw package -DskipTests`) or the Docker command above. Options:
+Run it with `scripts/generate.sh` (needs a built jar) or with the Docker command above. Options:
 
 | Option | Default | Meaning |
 |---|---|---|
 | `--count N` | 10000 | number of events |
-| `--seed N` | 42 | same seed gives the same events |
+| `--seed N` | 42 | the same seed gives the same events |
 | `--hours N` | 24 | length of the time range |
 | `--to ISO_TIME` | now | end of the time range |
-| `--out FILE` | stdout | write a JSON array; it can be POSTed to the API as is |
+| `--out FILE` | stdout | write a JSON array, which can be POSTed to the API as is |
 | `--post URL` | | POST batches to `URL/v1/events/ingest` instead of writing |
 | `--batch-size N` | 500 | events per POST |
 
-About 70% of events are background traffic from a pool of 200 clients across three site configurations and
-14 rules covering every category. The other 30% are **attack waves**: 30 to 120 events from one IP, against
-one path, with one rule, a few seconds apart, mostly `DENY`. Events are emitted in timestamp order.
+About 70% of the events are background traffic from a pool of 200 clients across three site configurations,
+using 14 rules that cover every category. The other 30% are **attack waves**: 30 to 120 events from one IP
+against one path with one rule, a few seconds apart and mostly `DENY`. Events are emitted in timestamp order.
 
 ## API
 
-### Errors
-
-Every error, including the ones Spring raises itself (404, 405, 415), has the same body:
-
-```json
-{ "status": 400, "code": "VALIDATION_FAILED", "message": "One or more events are invalid",
-  "errors": [ { "index": 1, "field": "rule.severity", "code": "INVALID_ENUM",
-                "message": "must be one of CRITICAL, HIGH, MEDIUM, LOW" } ] }
-```
-
-Branch on `code`, not on `message`.
-
-| HTTP | `code` | When |
-|---|---|---|
-| 400 | `VALIDATION_FAILED` | Some events in an ingest request are invalid; `errors` lists them |
-| 400 | `INVALID_REQUEST` | A query parameter is missing, malformed or out of range; `errors` names it |
-| 400 | `MALFORMED_REQUEST` | The body is empty or not valid JSON |
-| 404 / 405 / 415 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `UNSUPPORTED_MEDIA_TYPE` | Unknown endpoint, wrong method, body not `application/json` |
-| 503 | `SERVICE_UNAVAILABLE` | The database is unreachable or timed out. Has a `Retry-After` header; retrying is safe |
-| 500 | `INTERNAL_ERROR` | A bug. The message is generic and `errorId` matches a line in the server log |
-
-Field errors have a `code` too: `REQUIRED`, `INVALID_ENUM` (the message lists the allowed values), `INVALID_FORMAT`,
-`INVALID_TYPE` and `OUT_OF_RANGE`. `index` is the position in the batch and is left out when the request is not an
-array or the error is not about a batch item (such as a query parameter). `errorId` appears on 5xx errors only.
-If a bad batch has more than 100 problems, only the first 100 are listed and `"truncated": true` is set.
-Timestamps are ISO 8601 UTC, and time ranges are `from` inclusive, `to` exclusive.
+Timestamps are ISO 8601 UTC. Time ranges are `from` inclusive, `to` exclusive.
 
 ### `POST /v1/events/ingest`
 
@@ -110,24 +102,27 @@ curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json'
 # {"accepted":1,"duplicates":0}
 ```
 
-Required: `eventId`, `timestamp`, `configId`, `clientIp`, `path`, `method`, `rule` (with `id`, `name`,
-`severity`, `category`) and `action`. Validation is strict: `timestamp` must be an ISO 8601 string with a zone or
-offset (not an epoch number or a bare date), numbers must be numbers (not `"77"`), `clientIp` must be a literal
-IPv4 or IPv6 address, and `statusCode`, if present, must be 100 to 599. Enums: `severity` CRITICAL/HIGH/MEDIUM/LOW; `category` INJECTION, XSS,
-PROTOCOL_VIOLATION, DATA_LEAKAGE, BOT, DOS, RATE_LIMIT; `action` DENY/ALERT/MONITOR. Bad enum values and
-unparseable timestamps are reported per event and field (for example `rule.severity`).
+To ingest a generated file: `curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' -d @events.json`.
 
-- **A batch is all or nothing**: if any event is invalid, nothing is stored and the problems of every event are
-  listed (for each event, the first problem with its structure or types, and all of its missing or out-of-range fields).
-- **Ingestion is idempotent**: an event whose `eventId` already exists, in the database or earlier in the same
+**Required fields:** `eventId`, `timestamp`, `configId`, `clientIp`, `path`, `method`, `rule` (with `id`, `name`,
+`severity` and `category`) and `action`. Everything else is optional.
+
+**Enums:** `severity` is CRITICAL, HIGH, MEDIUM or LOW; `category` is INJECTION, XSS, PROTOCOL_VIOLATION,
+DATA_LEAKAGE, BOT, DOS or RATE_LIMIT; `action` is DENY, ALERT or MONITOR.
+
+**Validation is strict.** `timestamp` must be an ISO 8601 string with a zone or offset (not an epoch number or a
+bare date); numbers must be numbers (not `"77"` or `1.5` for a whole number); `clientIp` must be a literal IPv4
+or IPv6 address; `statusCode`, if present, must be 100 to 599.
+
+- **A batch is all or nothing.** If any event is invalid, nothing is stored and the problems of every event are
+  listed: for each event, its first structural or type problem plus all of its missing or out-of-range fields.
+- **Ingestion is idempotent.** An event whose `eventId` already exists, in the database or earlier in the same
   request, is skipped and counted in `duplicates`, so a client can safely retry a batch. Skipped events do not
   affect threat scores.
 
-To ingest a generated file: `curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' -d @events.json`.
-
 ### `GET /v1/stats/summary`
 
-`from` and `to` are required, `configId` is optional (omit it to aggregate all configurations).
+`from` and `to` are required. `configId` is optional; omit it to aggregate all configurations.
 
 ```bash
 curl 'localhost:8080/v1/stats/summary?configId=14227&from=2026-05-20T00:00:00Z&to=2026-05-21T00:00:00Z'
@@ -151,8 +146,9 @@ decimal. Categories and actions with no events are left out.
 
 ### `GET /v1/events/samples`
 
-All parameters are optional: `configId`, `from`, `to`, `category`, `action`, `limit` (default 20, 1 to 100) and
-`offset` (default 0). A `limit` above 100 is capped at 100 and the response reports the limit that was applied; a `limit` below 1 or a negative `offset` is a 400.
+All parameters are optional: `configId`, `from`, `to`, `category`, `action`, `limit` (default 20) and
+`offset` (default 0). A `limit` above 100 is capped at 100, and the response reports the limit that was applied.
+A `limit` below 1 or a negative `offset` is a 400.
 
 ```bash
 curl 'localhost:8080/v1/events/samples?configId=14227&category=INJECTION&action=DENY&limit=2&offset=0'
@@ -166,9 +162,12 @@ curl 'localhost:8080/v1/events/samples?configId=14227&category=INJECTION&action=
                "attackType": "SQL/Command Injection", "threatScore": 75 } ] }
 ```
 
-Newest first, with `eventId` as a tie-breaker so pages never overlap. `total` counts all matches.
+Results are newest first, with `eventId` as a tie-breaker so pages never overlap. `total` counts all matches.
+Each item is the original event plus `receivedAt`, `attackType` and `threatScore`.
 
 ### `GET /v1/stats/timeseries` (bonus)
+
+`from`, `to` and `interval` (`1m`, `5m` or `1h`) are required; `configId` is optional.
 
 ```bash
 curl 'localhost:8080/v1/stats/timeseries?configId=14227&from=2026-05-20T00:00:00Z&to=2026-05-20T01:00:00Z&interval=5m'
@@ -181,12 +180,42 @@ curl 'localhost:8080/v1/stats/timeseries?configId=14227&from=2026-05-20T00:00:00
                { "start": "2026-05-20T00:05:00Z", "count": 0 } ] }
 ```
 
-`interval` is `1m`, `5m` or `1h` and is required. Buckets are aligned to the clock and gaps are filled with
-`count: 0`, so the series can be charted directly. A range spanning more than 5,000 buckets is rejected.
+Buckets are aligned to the clock, so `1h` buckets start on the hour. Empty buckets are returned with `count: 0`,
+so the series can be charted directly. If `from` falls inside a bucket, that first bucket only counts events from
+`from` onwards. A range spanning more than 5,000 buckets is rejected.
+
+### Errors
+
+Every error, including the ones Spring raises itself (404, 405, 415), has the same body:
+
+```json
+{ "status": 400, "code": "VALIDATION_FAILED", "message": "One or more events are invalid",
+  "errors": [ { "index": 1, "field": "rule.severity", "code": "INVALID_ENUM",
+                "message": "must be one of CRITICAL, HIGH, MEDIUM, LOW" } ] }
+```
+
+Branch on `code`, not on `message`.
+
+| HTTP | `code` | When |
+|---|---|---|
+| 400 | `VALIDATION_FAILED` | Some events in an ingest request are invalid; `errors` lists them |
+| 400 | `INVALID_REQUEST` | A query parameter is missing, malformed or out of range; `errors` names it |
+| 400 | `MALFORMED_REQUEST` | The body is empty or not valid JSON |
+| 404 / 405 / 415 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `UNSUPPORTED_MEDIA_TYPE` | Unknown endpoint, wrong method, body not `application/json` |
+| 503 | `SERVICE_UNAVAILABLE` | The database is unreachable or timed out. Has a `Retry-After` header; retrying is safe |
+| 500 | `INTERNAL_ERROR` | A bug. The message is generic and `errorId` matches a line in the server log |
+
+Field errors carry a `code` too: `REQUIRED`, `INVALID_ENUM` (the message lists the allowed values),
+`INVALID_FORMAT`, `INVALID_TYPE` or `OUT_OF_RANGE`.
+
+- `index` is the event's position in the batch. It is left out when the request is a single event or the
+  error is not about an event (such as a query parameter).
+- If a bad batch has more than 100 problems, only the first 100 are listed and `"truncated": true` is set.
+- `errorId` appears on 5xx errors only.
 
 ## Threat score
 
-Integer 0 to 100, computed at ingestion:
+An integer from 0 to 100, computed at ingestion:
 
 | Factor | Points |
 |---|---|
@@ -196,9 +225,9 @@ Integer 0 to 100, computed at ingestion:
 | Repeat offender: more than 5 earlier events from the same IP in the 10 minutes up to this event | +15 |
 
 The result is capped at 100. With these weights the highest reachable score is 90, so the cap never triggers
-today; it is kept so the contract holds if weights change.
+today; it is kept so the contract holds if the weights change.
 
-`attackType` maps from the category: INJECTION is "SQL/Command Injection", XSS is "Cross-Site Scripting",
+`attackType` comes from the category: INJECTION is "SQL/Command Injection", XSS is "Cross-Site Scripting",
 PROTOCOL_VIOLATION is "Protocol Anomaly", DATA_LEAKAGE is "Data Exfiltration", BOT is "Bot Activity", DOS is
 "Denial of Service" and RATE_LIMIT is "Rate Limiting".
 
@@ -207,7 +236,7 @@ PROTOCOL_VIOLATION is "Protocol Anomaly", DATA_LEAKAGE is "Data Exfiltration", B
 ```mermaid
 flowchart LR
     C[Client / generator] -->|POST /v1/events/ingest| IC[IngestController]
-    IC --> IS[IngestService<br/>validate whole batch]
+    IC --> IS[IngestService<br/>bind, validate, skip duplicates]
     IS --> CL[ClassificationService]
     IS --> TS[ThreatScoreService]
     TS --- RO[RepeatOffenderTracker<br/>10-min window per IP]
@@ -222,33 +251,31 @@ Code layout (`com.akamai.miniwsa`):
 | Package | Responsibility |
 |---|---|
 | `api` | HTTP only: controllers and the error handler. No business logic. |
-| `ingest` | Validation of a batch, then enrich and store. |
+| `ingest` | Binding and validating a batch, skipping duplicates, then enriching and storing it. |
 | `enrich` | Classification, threat scoring, repeat-offender window. Pure logic, so it is easy to unit test. |
-| `stats`, `samples` | Query-side services: parameter rules, assembling responses. |
+| `stats`, `samples` | Query-side services: parameter rules and assembling responses. |
 | `storage` | `EventRepository` interface and the PostgreSQL implementation. The only place with SQL. |
 | `generator` | Data generator, independent of the web layer. |
 | `model` | Records and enums shared by the layers. |
 
-All aggregation happens in SQL (one `GROUP BY` per section), nothing is aggregated in Java. Filters share one
-`EventFilter` and one WHERE builder. Column names that reach SQL come from an enum, never from request input.
+All aggregation happens in SQL (one `GROUP BY` per section); nothing is aggregated in Java. Filters share one
+`EventFilter` and one WHERE builder, and column names that reach SQL come from an enum, never from request input.
 
 ## Storage choice
 
-**PostgreSQL**, with the events table flattened into one row per event and indexed on `(config_id, ts DESC)`,
-`(ts DESC)` and `(client_ip, ts)`.
+**PostgreSQL.** One flattened row per event, indexed on `(config_id, ts DESC)`, `(ts DESC)` and `(client_ip, ts)`.
 
-Why: the workload is append-heavy with analytical reads, but at this scale what matters is correctness and
-simplicity. Postgres gives strong SQL for the aggregations (`GROUP BY`, `date_bin`), transactions for atomic
-batch inserts, and a primary key that makes ingestion idempotent. It is also trivial to run and test with
-Testcontainers.
+At this scale what matters is correctness and simplicity. Postgres gives strong SQL for the aggregations
+(`GROUP BY`, `date_bin`), transactions for atomic batch inserts, and a primary key that makes ingestion
+idempotent. It is also trivial to run and to test with Testcontainers.
 
-Where it stops scaling, and what I would do at "real" WSA volume (millions of events per minute):
+Where it stops scaling, and what I would do at real WSA volume (millions of events per minute):
 
-- Wide aggregate scans over row storage get slow, and each index costs write throughput. The natural next step is
-  a **columnar store such as ClickHouse** (or Druid/Pinot), fed through **Kafka**, which also decouples ingestion
-  from storage. The `EventRepository` interface is the seam for that swap.
-- Short of replacing it: range-partition by month on `ts` (drop old partitions instead of deleting), BRIN
-  indexes for time, rollup tables or materialised views for the summary, and read replicas.
+- Wide aggregate scans over row storage get slow, and every index costs write throughput. The natural next step
+  is a **columnar store such as ClickHouse** (or Druid or Pinot), fed through **Kafka**, which also decouples
+  ingestion from storage. The `EventRepository` interface is the seam for that swap.
+- Short of replacing it: range-partition by month on `ts` (and drop old partitions instead of deleting rows),
+  BRIN indexes for time, rollup tables or materialised views for the summary, and read replicas.
 - `count(*)` and deep `OFFSET` in the samples API get slower as the table grows. Use keyset pagination and
   approximate or capped totals.
 
@@ -257,35 +284,41 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
 - **"Last 10 minutes" uses event time**, not wall-clock time. The window is measured against the event's
   `timestamp`, so replayed or generated data scores the same however fast it is loaded. Events are counted in
   the order they are ingested, so out-of-order data is scored on what has been seen so far.
-- **Repeat-offender** means more than 5 *earlier* events in the window; the current event is not counted.
-- **The repeat-offender window is in memory**: per instance, empty after a restart, and idle IPs are not evicted.
+- **Repeat offender** means more than 5 *earlier* events in the window; the current event is not counted.
+- **The repeat-offender window is in memory:** per instance, empty after a restart, and idle IPs are not evicted.
   Events join the window only after their batch has been stored, so a failed or retried request leaves it
-  unchanged. See the improvements below.
-- **Whole-batch rejection** keeps clients simple (nothing to reconcile after a 400).
-- `receivedAt` is set once per request by the server clock.
+  unchanged.
+- **Whole-batch rejection** keeps clients simple: there is nothing to reconcile after a 400.
+- **`receivedAt`** is set once per request by the server clock.
+- **Storage failures are 503, not 500.** An unreachable or slow database returns `503` with `Retry-After` within
+  about 3 seconds (the connection timeout), because retrying is the right client response.
 
 ## Testing
 
-- Error handling: the shared error body for every kind of failure (404, 405, 415, malformed JSON, bad parameters),
-  503 with `Retry-After` and 500 with an `errorId` (storage mocked to fail), the capped error list, and that a failed
-  save leaves the repeat-offender window untouched.
-- Unit tests: classification (every category), scoring (every branch, bonuses stacking, the cap), the
-  repeat-offender window (boundaries, independent IPs, out-of-order), and the generator (determinism, ordering,
-  validity, category coverage, attack-wave shape, and that waves actually trigger the repeat-offender bonus).
-- API tests against a real PostgreSQL: ingestion (single, batch, validation errors, atomic rejection, duplicates,
-  stored values), stats, samples (filters, pagination, flat output) and the time series.
+- **Unit tests:**
+  - classification for every category
+  - scoring for every branch, stacking bonuses and the cap
+  - the repeat-offender window (boundaries, independent IPs, out-of-order events, batches that only count once committed)
+  - ingestion logic (duplicates, capped error list, a failed save leaving the window untouched)
+  - the generator (determinism, ordering, validity, category coverage, attack-wave shape, and that waves trigger the repeat-offender bonus)
+- **API tests against a real PostgreSQL:** ingestion (single, batch, every kind of validation error, atomic
+  rejection, duplicates, stored values), stats, samples (filters, pagination, flat output) and the time series.
+- **Error-handling tests:** the shared error body for 404, 405, 415, malformed JSON and bad parameters, plus 503
+  with `Retry-After` and 500 with an `errorId` when storage is made to fail.
 
 ## What I would improve with more time
 
 - Put a queue (Kafka) between ingestion and storage, with async batched writes and back-pressure, and move
   analytics to a columnar store (see above).
-- Keep the repeat-offender state in Redis (or derive it from a time-bounded query) so it survives restarts and
+- Keep the repeat-offender state in Redis, or derive it from a time-bounded query, so it survives restarts and
   works across several instances; evict idle IPs.
 - Keyset pagination for samples; cached or approximate totals; partitioning and rollup tables.
-- Authentication, per-tenant authorisation on `configId`, rate limiting, request size limits.
-- Metrics and health endpoints (Actuator, Prometheus), structured logging, and load tests with a measured
-  ingest throughput instead of estimates.
-- Alerting rules on top of the stats (the other bonus option), and OpenAPI documentation generated from code.
+- Authentication, per-tenant authorisation on `configId`, rate limiting, and request and batch size limits.
+- Metrics and health endpoints (Actuator, Prometheus), structured logging, and load tests that measure ingest
+  throughput instead of estimating it.
+- A partial-success ingest mode that reports each event's outcome, retries with backoff in the generator, and
+  OpenAPI documentation generated from code.
+- Alerting rules on top of the stats (the other bonus option).
 
 ## Challenges
 
@@ -297,9 +330,9 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
   against and whether the current event counts. I chose event time and "earlier events only", wrote them down
   above, and covered the boundaries with tests.
 - **Test infrastructure.** Sharing one Spring context across several Testcontainers-based test classes broke
-  when the container was stopped after the first class, so the container is started once for the whole run.
-  Separately, a recent Docker engine rejected the old default Docker API version used by Testcontainers (see
-  the Tests section for the workaround).
+  when the container was stopped after the first class, so the container is now started once for the whole run.
+  Separately, a recent Docker engine rejected the old Docker API version that Testcontainers uses by default
+  (see the Tests section for the workaround).
 - **Generating believable data.** Uniform random events make dull analytics. Attack waves from a single IP
   against a single path, with a fixed seed, give the stats and the repeat-offender logic something real to
   show, and keep the output reproducible.
@@ -309,9 +342,9 @@ Where it stops scaling, and what I would do at "real" WSA volume (millions of ev
 | Tag | Content |
 |---|---|
 | `v0.1-ingestion` | Ingest endpoint, validation, `receivedAt` |
-| `v0.2-enrichment` | Classification, threat score, PostgreSQL + Flyway, docker-compose |
+| `v0.2-enrichment` | Classification, threat score, PostgreSQL and Flyway, docker-compose |
 | `v0.3-stats` | `GET /v1/stats/summary` |
 | `v0.4-samples` | `GET /v1/events/samples` with filters and pagination |
 | `v0.5-generator` | Seeded generator with attack waves |
 | `v0.6-timeseries` | `GET /v1/stats/timeseries` (bonus) |
-| `v1.0` | Documentation |
+| `v1.0` | Strict validation, error handling, documentation |
