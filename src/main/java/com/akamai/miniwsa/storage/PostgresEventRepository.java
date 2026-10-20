@@ -3,10 +3,13 @@ package com.akamai.miniwsa.storage;
 import com.akamai.miniwsa.model.EnrichedEvent;
 import com.akamai.miniwsa.model.GeoLocation;
 import com.akamai.miniwsa.model.SecurityEvent;
+import com.akamai.miniwsa.model.StatsGroup;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 @Repository
@@ -56,5 +59,23 @@ public class PostgresEventRepository implements EventRepository {
             ps.setString(i++, e.attackType());
             ps.setInt(i, e.threatScore());
         });
+    }
+
+    @Override
+    public List<StatsGroup> topGroups(Dimension dimension, Long configId, Instant from, Instant to, int limit) {
+        List<Object> args = new ArrayList<>(List.of(Timestamp.from(from), Timestamp.from(to)));
+        String configFilter = "";
+        if (configId != null) {
+            configFilter = " AND config_id = ?";
+            args.add(configId);
+        }
+        args.add(limit);
+
+        String sql = "SELECT " + dimension.sql + " AS key, count(*) AS cnt, "
+                + "round(avg(threat_score), 1) AS avg_score FROM events "
+                + "WHERE ts >= ? AND ts < ?" + configFilter
+                + " GROUP BY 1 ORDER BY cnt DESC, key LIMIT ?";
+        return jdbc.query(sql, (rs, i) -> new StatsGroup(rs.getString("key"), rs.getLong("cnt"),
+                rs.getDouble("avg_score")), args.toArray());
     }
 }

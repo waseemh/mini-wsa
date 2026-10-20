@@ -1,12 +1,10 @@
 package com.akamai.miniwsa.api;
 
+import com.akamai.miniwsa.PostgresIntegrationTest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -17,10 +15,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@Testcontainers
-class IngestApiTest {
+class IngestApiTest extends PostgresIntegrationTest {
 
     private static final String EVENT = """
             {"eventId":"%s","timestamp":"2026-05-20T14:32:10Z","configId":14227,"policyId":"pol_web1",
@@ -30,10 +25,6 @@ class IngestApiTest {
                      "severity":"%s","category":"INJECTION"},
              "action":"DENY","geoLocation":{"country":"CN","city":"Beijing"},
              "requestSize":1024,"responseSize":256}""";
-
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
