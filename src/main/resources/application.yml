@@ -8,6 +8,10 @@ spring:
     hikari:
       # fail fast when the database is unreachable, so clients get a 503 within seconds instead of 30
       connection-timeout: 3000
+  jdbc:
+    template:
+      # no single statement may hold one of the few pooled connections longer than this
+      query-timeout: 10s
   jackson:
     deserialization:
       # strict input: 1.5 is not a valid configId

@@ -15,6 +15,8 @@ import com.akamai.miniwsa.model.TimeSeries.Bucket;
 import com.akamai.miniwsa.storage.EventRepository;
 import com.akamai.miniwsa.storage.EventRepository.Dimension;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -34,6 +36,7 @@ public class StatsService {
         this.repository = repository;
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public StatsSummary summary(Long configId, Instant from, Instant to) {
         if (from.isAfter(to)) {
             throw new InvalidRequestException("from", ErrorCode.OUT_OF_RANGE, "'from' must not be after 'to'");
@@ -66,6 +69,7 @@ public class StatsService {
      * Counts per bucket for {@code from <= timestamp < to}. Buckets are aligned to the interval, so the
      * first one starts at or before {@code from} and only counts events from {@code from} on.
      */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public TimeSeries timeSeries(Long configId, Instant from, Instant to, BucketInterval interval) {
         if (from.isAfter(to)) {
             throw new InvalidRequestException("from", ErrorCode.OUT_OF_RANGE, "'from' must not be after 'to'");

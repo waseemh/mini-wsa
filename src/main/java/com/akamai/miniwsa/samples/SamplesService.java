@@ -6,6 +6,8 @@ import com.akamai.miniwsa.model.EventFilter;
 import com.akamai.miniwsa.model.SamplesPage;
 import com.akamai.miniwsa.storage.EventRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class SamplesService {
@@ -19,6 +21,7 @@ public class SamplesService {
         this.repository = repository;
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public SamplesPage samples(EventFilter filter, int limit, int offset) {
         if (limit < 1) {
             throw new InvalidRequestException("limit", ErrorCode.OUT_OF_RANGE, "must be at least 1");

@@ -76,7 +76,7 @@ Run it with `scripts/generate.sh` (needs a built jar) or with the Docker command
 | `--to ISO_TIME` | now | end of the time range |
 | `--out FILE` | stdout | write a JSON array, which can be POSTed to the API as is |
 | `--post URL` | | POST batches to `URL/v1/events/ingest` instead of writing |
-| `--batch-size N` | 500 | events per POST |
+| `--batch-size N` | 500 | events per POST (the API accepts at most 5,000) |
 
 About 70% of the events are background traffic from a pool of 200 clients across three site configurations,
 using 14 rules that cover every category. The other 30% are **attack waves**: 30 to 120 events from one IP
@@ -103,6 +103,8 @@ curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json'
 ```
 
 To ingest a generated file: `curl -X POST localhost:8080/v1/events/ingest -H 'Content-Type: application/json' -d @events.json`.
+
+**Limits:** at most 5,000 events and 8 MB per request (larger requests get a `413`; send several smaller batches).
 
 **Required fields:** `eventId`, `timestamp`, `configId`, `clientIp`, `path`, `method`, `rule` (with `id`, `name`,
 `severity` and `category`) and `action`. Everything else is optional.
@@ -201,6 +203,7 @@ Branch on `code`, not on `message`.
 | 400 | `VALIDATION_FAILED` | Some events in an ingest request are invalid; `errors` lists them |
 | 400 | `INVALID_REQUEST` | A query parameter is missing, malformed or out of range; `errors` names it |
 | 400 | `MALFORMED_REQUEST` | The body is empty or not valid JSON |
+| 413 | `PAYLOAD_TOO_LARGE` | More than 5,000 events or more than 8 MB in one request |
 | 404 / 405 / 415 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `UNSUPPORTED_MEDIA_TYPE` | Unknown endpoint, wrong method, body not `application/json` |
 | 503 | `SERVICE_UNAVAILABLE` | The database is unreachable or timed out. Has a `Retry-After` header; retrying is safe |
 | 500 | `INTERNAL_ERROR` | A bug. The message is generic and `errorId` matches a line in the server log |
@@ -290,8 +293,40 @@ Where it stops scaling, and what I would do at real WSA volume (millions of even
   unchanged.
 - **Whole-batch rejection** keeps clients simple: there is nothing to reconcile after a 400.
 - **`receivedAt`** is set once per request by the server clock.
+- **Concurrency.** Requests are handled on separate threads and share only the database and the in-memory
+  repeat-offender window. The database is the source of truth: the primary key and `ON CONFLICT DO NOTHING` mean
+  concurrent requests can never store an event twice, and each batch is inserted in one transaction. Read endpoints
+  run in a single read-only `REPEATABLE_READ` transaction, so all the numbers in one response come from the same
+  snapshot even while ingestion continues.
+  Known trade-offs: when two requests race on the same `eventId`, both may report it as `accepted` (only one row is
+  stored), and concurrent batches from the same IP do not see each other's uncommitted events when computing the
+  repeat-offender bonus. Both are small and are listed under the improvements below.
 - **Storage failures are 503, not 500.** An unreachable or slow database returns `503` with `Retry-After` within
   about 3 seconds (the connection timeout), because retrying is the right client response.
+
+## Performance
+
+Measured on a laptop (Docker Desktop, app and PostgreSQL in containers, default settings), with one client and
+100,000 generated events; treat the numbers as rough, they come from a single run:
+
+| What | Result |
+|---|---|
+| Ingest 100,000 events in batches of 1,000 (including generating them) | about 4 s, roughly 25,000 events/s |
+| `GET /v1/stats/summary`, all configurations, 100k events | about 80 ms |
+| `GET /v1/stats/summary`, one configuration | about 40 ms |
+| `GET /v1/events/samples` (newest 20) | under 10 ms |
+| `GET /v1/events/samples` with filters and `offset=5000` | about 25 ms |
+| `GET /v1/stats/timeseries`, 24 h in 5-minute buckets | about 20 ms |
+
+What keeps it fast and stable under load:
+
+- Batched inserts (`reWriteBatchedInserts`), one existence check per request, and a connection held only for the
+  insert itself, never while parsing, validating or scoring.
+- All aggregation in SQL, on indexes that match the filters.
+- A pool of 10 database connections. If they are all busy, a request waits at most 3 seconds and then gets a `503`
+  with `Retry-After`, instead of piling up.
+- A 10-second timeout on every statement, so one runaway query cannot hold a connection forever.
+- Bounded requests: at most 5,000 events and 8 MB per request, enforced while the body is parsed.
 
 ## Testing
 
@@ -303,6 +338,12 @@ Where it stops scaling, and what I would do at real WSA volume (millions of even
   - the generator (determinism, ordering, validity, category coverage, attack-wave shape, and that waves trigger the repeat-offender bonus)
 - **API tests against a real PostgreSQL:** ingestion (single, batch, every kind of validation error, atomic
   rejection, duplicates, stored values), stats, samples (filters, pagination, flat output) and the time series.
+- **Concurrency tests (real HTTP, many threads):** 16 clients ingesting in parallel store every event exactly once;
+  the same batch posted by 8 clients at once is stored once; and while 4 writers ingest, readers always get a
+  summary whose parts agree with each other and a samples page whose `total` matches its items. The last one was
+  checked to fail without the read-only snapshot transaction.
+- **Limits and timeouts:** oversized batches and bodies are rejected with 413, and a slow statement is cancelled
+  after the configured timeout.
 - **Error-handling tests:** the shared error body for 404, 405, 415, malformed JSON and bad parameters, plus 503
   with `Retry-After` and 500 with an `errorId` when storage is made to fail.
 
@@ -310,10 +351,12 @@ Where it stops scaling, and what I would do at real WSA volume (millions of even
 
 - Put a queue (Kafka) between ingestion and storage, with async batched writes and back-pressure, and move
   analytics to a columnar store (see above).
+- Report `accepted` exactly when requests race on the same ids (`INSERT … RETURNING event_id` instead of a
+  separate existence check).
 - Keep the repeat-offender state in Redis, or derive it from a time-bounded query, so it survives restarts and
   works across several instances; evict idle IPs.
 - Keyset pagination for samples; cached or approximate totals; partitioning and rollup tables.
-- Authentication, per-tenant authorisation on `configId`, rate limiting, and request and batch size limits.
+- Authentication, per-tenant authorisation on `configId`, and rate limiting.
 - Metrics and health endpoints (Actuator, Prometheus), structured logging, and load tests that measure ingest
   throughput instead of estimating it.
 - A partial-success ingest mode that reports each event's outcome, retries with backoff in the generator, and
@@ -348,3 +391,5 @@ Where it stops scaling, and what I would do at real WSA volume (millions of even
 | `v0.5-generator` | Seeded generator with attack waves |
 | `v0.6-timeseries` | `GET /v1/stats/timeseries` (bonus) |
 | `v1.0` | Strict validation, error handling, documentation |
+
+Changes after `v1.0` (concurrency tests, read snapshots, timeouts and size limits) are on `main`.

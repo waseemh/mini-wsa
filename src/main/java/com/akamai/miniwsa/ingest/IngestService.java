@@ -3,6 +3,7 @@ package com.akamai.miniwsa.ingest;
 import com.akamai.miniwsa.api.error.ApiError.FieldError;
 import com.akamai.miniwsa.api.error.ErrorCode;
 import com.akamai.miniwsa.api.error.FieldErrors;
+import com.akamai.miniwsa.api.error.PayloadTooLargeException;
 import com.akamai.miniwsa.enrich.ClassificationService;
 import com.akamai.miniwsa.enrich.RepeatOffenderTracker;
 import com.akamai.miniwsa.enrich.ThreatScoreService;
@@ -31,6 +32,7 @@ import java.util.Set;
 public class IngestService {
 
     static final int MAX_REPORTED_ERRORS = 100;
+    public static final int MAX_BATCH_SIZE = 5000;
 
     /** @param accepted events stored; @param duplicates events skipped because their eventId already exists */
     public record Result(int accepted, int duplicates) {
@@ -93,6 +95,9 @@ public class IngestService {
         if (!body.isArray() && !body.isObject()) {
             throw new InvalidEventsException(List.of(new FieldError(null, "$", ErrorCode.INVALID_TYPE,
                     "request body must be an event or an array of events")), false);
+        }
+        if (body.size() > MAX_BATCH_SIZE) {
+            throw new PayloadTooLargeException("A request may contain at most " + MAX_BATCH_SIZE + " events; send smaller batches");
         }
         List<JsonNode> nodes = new ArrayList<>();
         if (body.isArray()) {

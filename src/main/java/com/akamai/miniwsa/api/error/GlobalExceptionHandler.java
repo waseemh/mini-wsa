@@ -1,7 +1,9 @@
 package com.akamai.miniwsa.api.error;
 
 import com.akamai.miniwsa.api.error.ApiError.FieldError;
+import com.akamai.miniwsa.config.JacksonConfig;
 import com.akamai.miniwsa.ingest.InvalidEventsException;
+import com.fasterxml.jackson.core.exc.StreamConstraintsException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
@@ -39,6 +41,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 "One or more events are invalid", null, ex.errors(), ex.truncated() ? true : null));
     }
 
+    @ExceptionHandler(PayloadTooLargeException.class)
+    ResponseEntity<Object> payloadTooLarge(PayloadTooLargeException ex) {
+        return tooLarge(ex.getMessage());
+    }
+
     @ExceptionHandler(InvalidRequestException.class)
     ResponseEntity<Object> invalidRequest(InvalidRequestException ex) {
         return badRequest(new FieldError(null, ex.field(), ex.code(), ex.getMessage()));
@@ -68,6 +75,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException ex,
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+        if (ex.getMostSpecificCause() instanceof StreamConstraintsException) {
+            return tooLarge("Request body is larger than " + JacksonConfig.MAX_BODY_BYTES / (1024 * 1024) + " MB");
+        }
         return ResponseEntity.badRequest().body(ApiError.of(400, ErrorCode.MALFORMED_REQUEST,
                 "Request body is missing or is not valid JSON"));
     }
@@ -101,6 +111,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             case 415 -> "Unsupported content type; send application/json";
             default -> status.is4xxClientError() ? "Invalid request" : "Unexpected error";
         };
+    }
+
+    private static ResponseEntity<Object> tooLarge(String message) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(ApiError.of(413, ErrorCode.PAYLOAD_TOO_LARGE, message));
     }
 
     private static ResponseEntity<Object> badRequest(FieldError error) {
